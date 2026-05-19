@@ -1,10 +1,11 @@
 import streamlit as st
+import yfinance as yf
 import pandas as pd
 import plotly.graph_objects as go
 import plotly.express as px
 from plotly.subplots import make_subplots
 import numpy as np
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 import io
 import re
 
@@ -109,6 +110,42 @@ section[data-testid="stSidebar"] * { color: var(--text) !important; }
 .pos { color: var(--green); }
 .neg { color: var(--red); }
 .neu { color: var(--muted); }
+
+/* Trend badge */
+.trend-card {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 1.4rem 1.6rem;
+    position: relative;
+    overflow: hidden;
+}
+.trend-badge {
+    display: inline-block;
+    padding: 0.3rem 0.9rem;
+    border-radius: 20px;
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    margin-bottom: 0.8rem;
+}
+.badge-bull  { background: rgba(16,185,129,0.15); color: #10b981; border: 1px solid #10b981; }
+.badge-bear  { background: rgba(244,63,94,0.15);  color: #f43f5e; border: 1px solid #f43f5e; }
+.badge-side  { background: rgba(251,191,36,0.15); color: #fbbf24; border: 1px solid #fbbf24; }
+
+.strat-card {
+    background: var(--surface);
+    border-left: 3px solid var(--accent);
+    border-radius: 0 8px 8px 0;
+    padding: 0.9rem 1.1rem;
+    margin-bottom: 0.6rem;
+    font-family: var(--font-mono);
+    font-size: 0.78rem;
+}
+.strat-title { color: var(--accent); font-weight: 700; margin-bottom: 0.3rem; font-size: 0.72rem; letter-spacing: 0.08em; text-transform: uppercase; }
+.strat-desc  { color: var(--text); line-height: 1.5; }
 
 /* Section labels */
 .section-label {
@@ -365,250 +402,559 @@ with st.sidebar:
             df["CumPnL"] = df["NetAmount"].cumsum()
 
         st.markdown("---")
-        st.markdown('<p style="font-family:\'Space Mono\',monospace;font-size:0.6rem;color:#64748b;">IBOT Options Dashboard v1.0<br>Thinkorswim · IBKR Compatible</p>', unsafe_allow_html=True)
 
-# ── Main ───────────────────────────────────────────────────────────────────
-if df_raw is None:
-    st.markdown('<h1 class="dashboard-title">OPTIONS P&L DASHBOARD</h1>', unsafe_allow_html=True)
-    st.markdown('<p class="dashboard-sub">IBOT Trading System · Thinkorswim Integration</p>', unsafe_allow_html=True)
-    st.info("👈 Select a data source in the sidebar to begin.")
-    st.stop()
+    st.markdown('<p style="font-family:\'Space Mono\',monospace;font-size:0.6rem;color:#64748b;">IBOT Options Dashboard v1.1<br>Thinkorswim · IBKR Compatible</p>', unsafe_allow_html=True)
 
-# Header
+# ── Main header ────────────────────────────────────────────────────────────
 st.markdown('<h1 class="dashboard-title">OPTIONS P&L DASHBOARD</h1>', unsafe_allow_html=True)
-st.markdown(f'<p class="dashboard-sub">IBOT TRADING SYSTEM · {len(df)} TRADES · LAST UPDATED {df["Date"].max().strftime("%d %b %Y").upper()}</p>', unsafe_allow_html=True)
 
-# ── KPI Row ────────────────────────────────────────────────────────────────
-total_net    = df["NetAmount"].sum()
-total_gross  = df[df["Amount"] > 0]["Amount"].sum()
-total_costs  = (df["Commissions"].sum() + df["MiscFees"].sum())
-win_trades   = (df["NetAmount"] > 0).sum()
-total_trades = len(df)
-win_rate     = win_trades / total_trades * 100 if total_trades > 0 else 0
-avg_per_trade = df["NetAmount"].mean()
-sell_trades  = df[df["Action"] == "SELL"]
-premium_collected = sell_trades["Amount"].sum()
+has_data = df_raw is not None
 
-k1, k2, k3, k4, k5 = st.columns(5)
+if has_data:
+    st.markdown(f'<p class="dashboard-sub">IBOT TRADING SYSTEM · {len(df)} TRADES · LAST UPDATED {df["Date"].max().strftime("%d %b %Y").upper()}</p>', unsafe_allow_html=True)
+else:
+    st.markdown('<p class="dashboard-sub">IBOT Trading System · Thinkorswim Integration</p>', unsafe_allow_html=True)
 
-def kpi(col, label, value, fmt="$", is_pct=False):
-    color = "pos" if value >= 0 else "neg"
-    if fmt == "$":
-        val_str = f"${value:,.0f}"
-    elif fmt == "%":
-        val_str = f"{value:.1f}%"
-    else:
-        val_str = f"{value:.0f}"
-    col.markdown(f"""
-    <div class="kpi-card">
-        <div class="kpi-label">{label}</div>
-        <div class="kpi-value {color}">{val_str}</div>
-    </div>""", unsafe_allow_html=True)
+# ── KPI Row (only when data loaded) ───────────────────────────────────────
+if has_data:
+    total_net    = df["NetAmount"].sum()
+    total_gross  = df[df["Amount"] > 0]["Amount"].sum()
+    total_costs  = (df["Commissions"].sum() + df["MiscFees"].sum())
+    win_trades   = (df["NetAmount"] > 0).sum()
+    total_trades = len(df)
+    win_rate     = win_trades / total_trades * 100 if total_trades > 0 else 0
+    avg_per_trade = df["NetAmount"].mean()
+    sell_trades  = df[df["Action"] == "SELL"]
+    premium_collected = sell_trades["Amount"].sum()
 
-with k1: kpi(k1, "NET P&L (incl. wire)", total_net + 10000, "$")
-with k2: kpi(k2, "GROSS PREMIUM COLLECTED", premium_collected, "$")
-with k3: kpi(k3, "TOTAL COMMISSIONS + FEES", total_costs, "$")
-with k4: kpi(k4, "WIN RATE", win_rate, "%")
-with k5: kpi(k5, "AVG NET / TRADE", avg_per_trade, "$")
+    k1, k2, k3, k4, k5 = st.columns(5)
 
-st.markdown("")
+    def kpi(col, label, value, fmt="$"):
+        color = "pos" if value >= 0 else "neg"
+        if fmt == "$":
+            val_str = f"${value:,.0f}"
+        elif fmt == "%":
+            val_str = f"{value:.1f}%"
+        else:
+            val_str = f"{value:.0f}"
+        col.markdown(f"""
+        <div class="kpi-card">
+            <div class="kpi-label">{label}</div>
+            <div class="kpi-value {color}">{val_str}</div>
+        </div>""", unsafe_allow_html=True)
+
+    with k1: kpi(k1, "NET P&L (incl. wire)", total_net + 10000, "$")
+    with k2: kpi(k2, "GROSS PREMIUM COLLECTED", premium_collected, "$")
+    with k3: kpi(k3, "TOTAL COMMISSIONS + FEES", total_costs, "$")
+    with k4: kpi(k4, "WIN RATE", win_rate, "%")
+    with k5: kpi(k5, "AVG NET / TRADE", avg_per_trade, "$")
+
+    st.markdown("")
 
 # ── Tabs ───────────────────────────────────────────────────────────────────
-tab1, tab2, tab3, tab4 = st.tabs(["📈  CUMULATIVE P&L", "🎯  BY TICKER", "📅  MONTHLY VIEW", "📋  TRADE LOG"])
+tab1, tab2, tab3, tab4, tab5 = st.tabs([
+    "📈  CUMULATIVE P&L",
+    "🎯  BY TICKER",
+    "📅  MONTHLY VIEW",
+    "📋  TRADE LOG",
+    "🌐  LIVE MARKET",
+])
 
 # ── Tab 1: Cumulative P&L ──────────────────────────────────────────────────
 with tab1:
-    col_a, col_b = st.columns([2, 1])
+    if not has_data:
+        st.info("👈 Select a data source in the sidebar to view P&L analytics.")
+    else:
+        col_a, col_b = st.columns([2, 1])
 
-    with col_a:
-        st.markdown('<p class="section-label">Cumulative Net P&L Over Time</p>', unsafe_allow_html=True)
-        fig = go.Figure()
+        with col_a:
+            st.markdown('<p class="section-label">Cumulative Net P&L Over Time</p>', unsafe_allow_html=True)
+            fig = go.Figure()
 
-        # Shaded area
-        fig.add_trace(go.Scatter(
-            x=df["Date"], y=df["CumPnL"],
-            fill="tozeroy",
-            fillcolor="rgba(0,212,255,0.07)",
-            line=dict(color="#00d4ff", width=2),
-            name="Cumulative P&L",
-            hovertemplate="<b>%{x|%d %b %Y}</b><br>Cumulative P&L: $%{y:,.0f}<extra></extra>"
+            fig.add_trace(go.Scatter(
+                x=df["Date"], y=df["CumPnL"],
+                fill="tozeroy",
+                fillcolor="rgba(0,212,255,0.07)",
+                line=dict(color="#00d4ff", width=2),
+                name="Cumulative P&L",
+                hovertemplate="<b>%{x|%d %b %Y}</b><br>Cumulative P&L: $%{y:,.0f}<extra></extra>"
+            ))
+
+            fig.add_hline(y=0, line_color="#64748b", line_dash="dot", line_width=1)
+
+            final_val = df["CumPnL"].iloc[-1]
+            fig.add_annotation(
+                x=df["Date"].iloc[-1], y=final_val,
+                text=f" ${final_val:,.0f}",
+                showarrow=False, font=dict(color="#00d4ff", size=12, family="Space Mono"),
+                xanchor="left"
+            )
+
+            fig.update_layout(**PLOTLY_THEME, height=320, showlegend=False,
+                              title=dict(text="", font=dict(size=12)))
+            st.plotly_chart(fig, use_container_width=True)
+
+        with col_b:
+            st.markdown('<p class="section-label">P&L Distribution</p>', unsafe_allow_html=True)
+            fig2 = go.Figure(go.Histogram(
+                x=df["NetAmount"],
+                nbinsx=20,
+                marker_color="#7c3aed",
+                marker_line_color="#0a0e1a",
+                marker_line_width=1,
+            ))
+            fig2.update_layout(**PLOTLY_THEME, height=320,
+                               xaxis_title="Net Amount ($)", yaxis_title="Trades")
+            st.plotly_chart(fig2, use_container_width=True)
+
+        st.markdown('<p class="section-label">Daily P&L</p>', unsafe_allow_html=True)
+        daily = df.groupby("Date")["NetAmount"].sum().reset_index()
+        colors = ["#10b981" if v >= 0 else "#f43f5e" for v in daily["NetAmount"]]
+        fig3 = go.Figure(go.Bar(
+            x=daily["Date"], y=daily["NetAmount"],
+            marker_color=colors,
+            hovertemplate="<b>%{x|%d %b %Y}</b><br>P&L: $%{y:,.0f}<extra></extra>"
         ))
-
-        # Zero line
-        fig.add_hline(y=0, line_color="#64748b", line_dash="dot", line_width=1)
-
-        # Annotation for final value
-        final_val = df["CumPnL"].iloc[-1]
-        fig.add_annotation(
-            x=df["Date"].iloc[-1], y=final_val,
-            text=f" ${final_val:,.0f}",
-            showarrow=False, font=dict(color="#00d4ff", size=12, family="Space Mono"),
-            xanchor="left"
-        )
-
-        fig.update_layout(**PLOTLY_THEME, height=320, showlegend=False,
-                          title=dict(text="", font=dict(size=12)))
-        st.plotly_chart(fig, use_container_width=True)
-
-    with col_b:
-        st.markdown('<p class="section-label">P&L Distribution</p>', unsafe_allow_html=True)
-        fig2 = go.Figure(go.Histogram(
-            x=df["NetAmount"],
-            nbinsx=20,
-            marker_color="#7c3aed",
-            marker_line_color="#0a0e1a",
-            marker_line_width=1,
-        ))
-        fig2.update_layout(**PLOTLY_THEME, height=320,
-                           xaxis_title="Net Amount ($)", yaxis_title="Trades")
-        st.plotly_chart(fig2, use_container_width=True)
-
-    # Daily P&L bars
-    st.markdown('<p class="section-label">Daily P&L</p>', unsafe_allow_html=True)
-    daily = df.groupby("Date")["NetAmount"].sum().reset_index()
-    colors = ["#10b981" if v >= 0 else "#f43f5e" for v in daily["NetAmount"]]
-    fig3 = go.Figure(go.Bar(
-        x=daily["Date"], y=daily["NetAmount"],
-        marker_color=colors,
-        hovertemplate="<b>%{x|%d %b %Y}</b><br>P&L: $%{y:,.0f}<extra></extra>"
-    ))
-    fig3.update_layout(**PLOTLY_THEME, height=220, showlegend=False)
-    st.plotly_chart(fig3, use_container_width=True)
+        fig3.update_layout(**PLOTLY_THEME, height=220, showlegend=False)
+        st.plotly_chart(fig3, use_container_width=True)
 
 # ── Tab 2: By Ticker ────────────────────────────────────────────────────────
 with tab2:
-    col_a, col_b = st.columns(2)
+    if not has_data:
+        st.info("👈 Select a data source in the sidebar to view ticker analytics.")
+    else:
+        col_a, col_b = st.columns(2)
 
-    with col_a:
-        st.markdown('<p class="section-label">Net P&L by Ticker</p>', unsafe_allow_html=True)
-        by_ticker = df.groupby("Ticker")["NetAmount"].sum().sort_values(ascending=True).reset_index()
-        colors = ["#10b981" if v >= 0 else "#f43f5e" for v in by_ticker["NetAmount"]]
-        fig = go.Figure(go.Bar(
-            x=by_ticker["NetAmount"], y=by_ticker["Ticker"],
-            orientation="h",
-            marker_color=colors,
-            text=[f"${v:,.0f}" for v in by_ticker["NetAmount"]],
-            textposition="outside",
-            textfont=dict(family="Space Mono", size=10),
-            hovertemplate="<b>%{y}</b><br>Net P&L: $%{x:,.0f}<extra></extra>"
-        ))
-        fig.update_layout(**PLOTLY_THEME, height=380, showlegend=False,
-                          xaxis_title="Net P&L ($)")
-        st.plotly_chart(fig, use_container_width=True)
+        with col_a:
+            st.markdown('<p class="section-label">Net P&L by Ticker</p>', unsafe_allow_html=True)
+            by_ticker = df.groupby("Ticker")["NetAmount"].sum().sort_values(ascending=True).reset_index()
+            colors = ["#10b981" if v >= 0 else "#f43f5e" for v in by_ticker["NetAmount"]]
+            fig = go.Figure(go.Bar(
+                x=by_ticker["NetAmount"], y=by_ticker["Ticker"],
+                orientation="h",
+                marker_color=colors,
+                text=[f"${v:,.0f}" for v in by_ticker["NetAmount"]],
+                textposition="outside",
+                textfont=dict(family="Space Mono", size=10),
+                hovertemplate="<b>%{y}</b><br>Net P&L: $%{x:,.0f}<extra></extra>"
+            ))
+            fig.update_layout(**PLOTLY_THEME, height=380, showlegend=False,
+                              xaxis_title="Net P&L ($)")
+            st.plotly_chart(fig, use_container_width=True)
 
-    with col_b:
-        st.markdown('<p class="section-label">Premium Share by Ticker</p>', unsafe_allow_html=True)
-        sell_by_ticker = df[df["Action"]=="SELL"].groupby("Ticker")["Amount"].sum().reset_index()
-        sell_by_ticker = sell_by_ticker[sell_by_ticker["Amount"] > 0]
-        fig2 = go.Figure(go.Pie(
-            labels=sell_by_ticker["Ticker"],
-            values=sell_by_ticker["Amount"],
-            hole=0.55,
-            textfont=dict(family="Space Mono", size=10),
-            marker=dict(line=dict(color="#0a0e1a", width=2)),
-        ))
-        fig2.update_layout(**PLOTLY_THEME, height=380,
-                           legend=dict(orientation="v", x=1.02, y=0.5))
-        st.plotly_chart(fig2, use_container_width=True)
+        with col_b:
+            st.markdown('<p class="section-label">Premium Share by Ticker</p>', unsafe_allow_html=True)
+            sell_by_ticker = df[df["Action"]=="SELL"].groupby("Ticker")["Amount"].sum().reset_index()
+            sell_by_ticker = sell_by_ticker[sell_by_ticker["Amount"] > 0]
+            fig2 = go.Figure(go.Pie(
+                labels=sell_by_ticker["Ticker"],
+                values=sell_by_ticker["Amount"],
+                hole=0.55,
+                textfont=dict(family="Space Mono", size=10),
+                marker=dict(line=dict(color="#0a0e1a", width=2)),
+            ))
+            fig2.update_layout(**PLOTLY_THEME, height=380,
+                               legend=dict(orientation="v", x=1.02, y=0.5))
+            st.plotly_chart(fig2, use_container_width=True)
 
-    # CALL vs PUT breakdown
-    st.markdown('<p class="section-label">CALL vs PUT vs STOCK — Net P&L</p>', unsafe_allow_html=True)
-    type_ticker = df.groupby(["Ticker","OptionType"])["NetAmount"].sum().reset_index()
-    fig3 = px.bar(type_ticker, x="Ticker", y="NetAmount", color="OptionType",
-                  barmode="group",
-                  color_discrete_map={"CALL":"#00d4ff","PUT":"#7c3aed","STOCK":"#fbbf24"})
-    fig3.update_layout(**PLOTLY_THEME, height=260,
-                       yaxis_title="Net P&L ($)", xaxis_title="")
-    st.plotly_chart(fig3, use_container_width=True)
+        st.markdown('<p class="section-label">CALL vs PUT vs STOCK — Net P&L</p>', unsafe_allow_html=True)
+        type_ticker = df.groupby(["Ticker","OptionType"])["NetAmount"].sum().reset_index()
+        fig3 = px.bar(type_ticker, x="Ticker", y="NetAmount", color="OptionType",
+                      barmode="group",
+                      color_discrete_map={"CALL":"#00d4ff","PUT":"#7c3aed","STOCK":"#fbbf24"})
+        fig3.update_layout(**PLOTLY_THEME, height=260,
+                           yaxis_title="Net P&L ($)", xaxis_title="")
+        st.plotly_chart(fig3, use_container_width=True)
 
 # ── Tab 3: Monthly View ─────────────────────────────────────────────────────
 with tab3:
-    col_a, col_b = st.columns([3, 2])
+    if not has_data:
+        st.info("👈 Select a data source in the sidebar to view monthly analytics.")
+    else:
+        col_a, col_b = st.columns([3, 2])
 
-    with col_a:
-        st.markdown('<p class="section-label">Monthly Net P&L</p>', unsafe_allow_html=True)
-        monthly = df.groupby("YearMonth")["NetAmount"].sum().reset_index().sort_values("YearMonth")
-        colors = ["#10b981" if v >= 0 else "#f43f5e" for v in monthly["NetAmount"]]
-        fig = go.Figure(go.Bar(
-            x=monthly["YearMonth"], y=monthly["NetAmount"],
-            marker_color=colors,
-            text=[f"${v:,.0f}" for v in monthly["NetAmount"]],
-            textposition="outside",
+        with col_a:
+            st.markdown('<p class="section-label">Monthly Net P&L</p>', unsafe_allow_html=True)
+            monthly = df.groupby("YearMonth")["NetAmount"].sum().reset_index().sort_values("YearMonth")
+            colors = ["#10b981" if v >= 0 else "#f43f5e" for v in monthly["NetAmount"]]
+            fig = go.Figure(go.Bar(
+                x=monthly["YearMonth"], y=monthly["NetAmount"],
+                marker_color=colors,
+                text=[f"${v:,.0f}" for v in monthly["NetAmount"]],
+                textposition="outside",
+                textfont=dict(family="Space Mono", size=9),
+            ))
+            fig.update_layout(**PLOTLY_THEME, height=320, showlegend=False,
+                              xaxis_title="Month", yaxis_title="Net P&L ($)")
+            st.plotly_chart(fig, use_container_width=True)
+
+        with col_b:
+            st.markdown('<p class="section-label">Monthly Summary Table</p>', unsafe_allow_html=True)
+            m_table = df.groupby("YearMonth").agg(
+                Trades=("NetAmount","count"),
+                Gross=("Amount","sum"),
+                Net=("NetAmount","sum"),
+                WinRate=("NetAmount", lambda x: f"{(x>0).sum()/len(x)*100:.0f}%")
+            ).reset_index().sort_values("YearMonth", ascending=False)
+            m_table["Net"] = m_table["Net"].apply(lambda x: f"${x:,.0f}")
+            m_table["Gross"] = m_table["Gross"].apply(lambda x: f"${x:,.0f}")
+            m_table.columns = ["Month","Trades","Gross","Net P&L","Win %"]
+            st.dataframe(m_table, use_container_width=True, hide_index=True, height=300)
+
+        st.markdown('<p class="section-label">P&L Heatmap — Ticker × Month</p>', unsafe_allow_html=True)
+        pivot = df.pivot_table(index="Ticker", columns="YearMonth", values="NetAmount", aggfunc="sum", fill_value=0)
+        fig4 = go.Figure(go.Heatmap(
+            z=pivot.values,
+            x=pivot.columns.tolist(),
+            y=pivot.index.tolist(),
+            colorscale=[[0,"#f43f5e"],[0.5,"#1a2235"],[1,"#10b981"]],
+            zmid=0,
+            text=[[f"${v:,.0f}" for v in row] for row in pivot.values],
+            texttemplate="%{text}",
             textfont=dict(family="Space Mono", size=9),
+            hovertemplate="<b>%{y}</b> · %{x}<br>P&L: $%{z:,.0f}<extra></extra>",
+            colorbar=dict(tickfont=dict(family="Space Mono", size=9)),
         ))
-        fig.update_layout(**PLOTLY_THEME, height=320, showlegend=False,
-                          xaxis_title="Month", yaxis_title="Net P&L ($)")
-        st.plotly_chart(fig, use_container_width=True)
-
-    with col_b:
-        st.markdown('<p class="section-label">Monthly Summary Table</p>', unsafe_allow_html=True)
-        m_table = df.groupby("YearMonth").agg(
-            Trades=("NetAmount","count"),
-            Gross=("Amount","sum"),
-            Net=("NetAmount","sum"),
-            WinRate=("NetAmount", lambda x: f"{(x>0).sum()/len(x)*100:.0f}%")
-        ).reset_index().sort_values("YearMonth", ascending=False)
-        m_table["Net"] = m_table["Net"].apply(lambda x: f"${x:,.0f}")
-        m_table["Gross"] = m_table["Gross"].apply(lambda x: f"${x:,.0f}")
-        m_table.columns = ["Month","Trades","Gross","Net P&L","Win %"]
-        st.dataframe(m_table, use_container_width=True, hide_index=True, height=300)
-
-    # Heatmap: P&L by ticker × month
-    st.markdown('<p class="section-label">P&L Heatmap — Ticker × Month</p>', unsafe_allow_html=True)
-    pivot = df.pivot_table(index="Ticker", columns="YearMonth", values="NetAmount", aggfunc="sum", fill_value=0)
-    fig4 = go.Figure(go.Heatmap(
-        z=pivot.values,
-        x=pivot.columns.tolist(),
-        y=pivot.index.tolist(),
-        colorscale=[[0,"#f43f5e"],[0.5,"#1a2235"],[1,"#10b981"]],
-        zmid=0,
-        text=[[f"${v:,.0f}" for v in row] for row in pivot.values],
-        texttemplate="%{text}",
-        textfont=dict(family="Space Mono", size=9),
-        hovertemplate="<b>%{y}</b> · %{x}<br>P&L: $%{z:,.0f}<extra></extra>",
-        colorbar=dict(tickfont=dict(family="Space Mono", size=9)),
-    ))
-    fig4.update_layout(**PLOTLY_THEME, height=300)
-    st.plotly_chart(fig4, use_container_width=True)
+        fig4.update_layout(**PLOTLY_THEME, height=300)
+        st.plotly_chart(fig4, use_container_width=True)
 
 # ── Tab 4: Trade Log ────────────────────────────────────────────────────────
 with tab4:
-    st.markdown('<p class="section-label">Full Trade Log</p>', unsafe_allow_html=True)
+    if not has_data:
+        st.info("👈 Select a data source in the sidebar to view the trade log.")
+    else:
+        st.markdown('<p class="section-label">Full Trade Log</p>', unsafe_allow_html=True)
 
-    col_s, col_t, _ = st.columns([2, 2, 4])
-    with col_s:
-        search = st.text_input("Search description", placeholder="e.g. PLTR CALL", label_visibility="collapsed")
-    with col_t:
-        sort_col = st.selectbox("Sort by", ["Date","NetAmount","Ticker"], label_visibility="collapsed")
+        col_s, col_t, _ = st.columns([2, 2, 4])
+        with col_s:
+            search = st.text_input("Search description", placeholder="e.g. PLTR CALL", label_visibility="collapsed")
+        with col_t:
+            sort_col = st.selectbox("Sort by", ["Date","NetAmount","Ticker"], label_visibility="collapsed")
 
-    log = df.copy()
-    if search:
-        log = log[log["Description"].str.contains(search, case=False, na=False)]
-    log = log.sort_values(sort_col, ascending=(sort_col=="Date"))
+        log = df.copy()
+        if search:
+            log = log[log["Description"].str.contains(search, case=False, na=False)]
+        log = log.sort_values(sort_col, ascending=(sort_col=="Date"))
 
-    display = log[["Date","Ticker","OptionType","Action","Description","Amount","Commissions","MiscFees","NetAmount","CumPnL"]].copy()
-    display["Date"] = display["Date"].dt.strftime("%d %b %Y")
-    display.columns = ["Date","Ticker","Type","Action","Description","Gross ($)","Comm ($)","Misc ($)","Net ($)","Cum P&L ($)"]
+        display = log[["Date","Ticker","OptionType","Action","Description","Amount","Commissions","MiscFees","NetAmount","CumPnL"]].copy()
+        display["Date"] = display["Date"].dt.strftime("%d %b %Y")
+        display.columns = ["Date","Ticker","Type","Action","Description","Gross ($)","Comm ($)","Misc ($)","Net ($)","Cum P&L ($)"]
 
-    st.dataframe(
-        display,
-        use_container_width=True,
-        height=480,
-        hide_index=True,
-        column_config={
-            "Net ($)": st.column_config.NumberColumn(format="$%.2f"),
-            "Gross ($)": st.column_config.NumberColumn(format="$%.2f"),
-            "Comm ($)": st.column_config.NumberColumn(format="$%.2f"),
-            "Misc ($)": st.column_config.NumberColumn(format="$%.2f"),
-            "Cum P&L ($)": st.column_config.NumberColumn(format="$%.2f"),
-        }
-    )
+        st.dataframe(
+            display,
+            use_container_width=True,
+            height=480,
+            hide_index=True,
+            column_config={
+                "Net ($)": st.column_config.NumberColumn(format="$%.2f"),
+                "Gross ($)": st.column_config.NumberColumn(format="$%.2f"),
+                "Comm ($)": st.column_config.NumberColumn(format="$%.2f"),
+                "Misc ($)": st.column_config.NumberColumn(format="$%.2f"),
+                "Cum P&L ($)": st.column_config.NumberColumn(format="$%.2f"),
+            }
+        )
 
-    # Export
-    csv_out = display.to_csv(index=False)
-    st.download_button(
-        "⬇ Export Filtered Trades CSV",
-        data=csv_out,
-        file_name=f"trades_export_{date.today()}.csv",
-        mime="text/csv",
-    )
+        csv_out = display.to_csv(index=False)
+        st.download_button(
+            "⬇ Export Filtered Trades CSV",
+            data=csv_out,
+            file_name=f"trades_export_{date.today()}.csv",
+            mime="text/csv",
+        )
+
+# ── Tab 5: Live Market Analysis ─────────────────────────────────────────────
+with tab5:
+    st.markdown('<p class="section-label">Live Trend Analysis & Vertical Spread Selector</p>', unsafe_allow_html=True)
+
+    # ── Preset quick-select buttons ────────────────────────────────────────
+    PRESETS = {
+        "Broad Market": ["SPY", "QQQ", "IWM", "TLT"],
+        "Sectors":      ["XLF", "XLE", "SMH", "XLK"],
+        "Mega-Cap":     ["AAPL", "MSFT", "NVDA", "TSLA"],
+        "High-Beta":    ["PLTR", "AMD", "SOFI", "IONQ"],
+    }
+
+    st.markdown("**Quick Select:**")
+    preset_cols = st.columns(len(PRESETS))
+    selected_preset_ticker = None
+    for i, (group, tickers) in enumerate(PRESETS.items()):
+        with preset_cols[i]:
+            st.markdown(f'<p style="font-family:\'Space Mono\',monospace;font-size:0.6rem;color:#64748b;text-transform:uppercase;letter-spacing:0.1em;margin-bottom:4px;">{group}</p>', unsafe_allow_html=True)
+            for t in tickers:
+                if st.button(t, key=f"preset_{t}", use_container_width=True):
+                    selected_preset_ticker = t
+
+    st.markdown("")
+
+    # ── Ticker input + lookback ────────────────────────────────────────────
+    ctrl_col1, ctrl_col2, ctrl_col3 = st.columns([2, 2, 4])
+    with ctrl_col1:
+        default_ticker = selected_preset_ticker if selected_preset_ticker else "SPY"
+        live_ticker = st.text_input(
+            "Ticker Symbol",
+            value=st.session_state.get("live_ticker_input", default_ticker),
+            key="live_ticker_input",
+            placeholder="e.g. SPY",
+        ).upper().strip()
+    with ctrl_col2:
+        lookback_days = st.slider("History (days)", min_value=120, max_value=500, value=365, step=30)
+
+    if selected_preset_ticker:
+        live_ticker = selected_preset_ticker
+
+    if not live_ticker:
+        st.info("Enter a ticker symbol above to begin live market analysis.")
+        st.stop()
+
+    # ── Fetch live data ────────────────────────────────────────────────────
+    @st.cache_data(ttl=300, show_spinner=False)
+    def fetch_market_data(ticker: str, days: int):
+        end = datetime.today()
+        start = end - timedelta(days=days)
+        raw = yf.download(ticker, start=start, end=end, progress=False, auto_adjust=True)
+        if isinstance(raw.columns, pd.MultiIndex):
+            raw.columns = raw.columns.get_level_values(0)
+        info = {}
+        try:
+            info = yf.Ticker(ticker).info
+        except Exception:
+            pass
+        return raw, info
+
+    with st.spinner(f"Fetching live data for {live_ticker}..."):
+        try:
+            mkt_data, ticker_info = fetch_market_data(live_ticker, lookback_days)
+        except Exception as e:
+            st.error(f"Failed to fetch data: {e}")
+            st.stop()
+
+    if mkt_data.empty:
+        st.error(f"No data returned for **{live_ticker}**. Check the ticker symbol and try again.")
+        st.stop()
+
+    # Need at least 200 rows for SMA200
+    if len(mkt_data) < 50:
+        st.warning(f"Only {len(mkt_data)} trading days available — extend the history range for reliable signals.")
+
+    # ── Calculate indicators ───────────────────────────────────────────────
+    mkt_data = mkt_data.copy()
+    mkt_data["SMA50"]  = mkt_data["Close"].rolling(window=50).mean()
+    mkt_data["SMA200"] = mkt_data["Close"].rolling(window=200).mean()
+
+    latest       = mkt_data["Close"].iloc[-1]
+    prev         = mkt_data["Close"].iloc[-2]
+    chg          = float(latest) - float(prev)
+    pct_chg      = chg / float(prev) * 100
+    sma50_val    = mkt_data["SMA50"].dropna().iloc[-1]  if not mkt_data["SMA50"].dropna().empty  else None
+    sma200_val   = mkt_data["SMA200"].dropna().iloc[-1] if not mkt_data["SMA200"].dropna().empty else None
+    latest_price = float(latest)
+
+    # ── Trend detection ────────────────────────────────────────────────────
+    if sma50_val is not None and sma200_val is not None:
+        s50 = float(sma50_val)
+        s200 = float(sma200_val)
+        if latest_price > s50 and s50 > s200:
+            trend_key = "BULL"
+            trend_label = "BULL MARKET — Uptrend"
+            badge_class = "badge-bull"
+            trend_color = "#10b981"
+        elif latest_price < s50 and s50 < s200:
+            trend_key = "BEAR"
+            trend_label = "BEAR MARKET — Downtrend"
+            badge_class = "badge-bear"
+            trend_color = "#f43f5e"
+        else:
+            trend_key = "SIDE"
+            trend_label = "SIDEWAYS — Consolidation"
+            badge_class = "badge-side"
+            trend_color = "#fbbf24"
+    else:
+        trend_key = "SIDE"
+        trend_label = "INSUFFICIENT DATA"
+        badge_class = "badge-side"
+        trend_color = "#fbbf24"
+        s50 = s200 = None
+
+    STRATEGIES = {
+        "BULL": [
+            {
+                "title": "Bull Put Spread (Credit) — preferred when IV is HIGH",
+                "desc": (
+                    "Sell an OTM Put below current price, buy a further OTM Put as a hedge. "
+                    "Collect premium upfront. Profit fully if the asset stays above your short strike "
+                    "through expiration. Best executed during IV spikes on a short-term pullback."
+                ),
+            },
+            {
+                "title": "Bull Call Spread (Debit) — preferred when IV is LOW",
+                "desc": (
+                    "Buy a near-the-money Call, sell a higher-strike Call to cap cost. "
+                    "Profits from a continued upward move. Costs less than a naked long call "
+                    "because the short call offsets premium paid."
+                ),
+            },
+        ],
+        "BEAR": [
+            {
+                "title": "Bear Call Spread (Credit) — preferred when IV is HIGH",
+                "desc": (
+                    "Sell an OTM Call above current price, buy a further OTM Call as a cap. "
+                    "Collect credit immediately. Profit fully if the asset stays below your short "
+                    "strike. Best during panic-driven IV spikes when call premiums inflate."
+                ),
+            },
+            {
+                "title": "Bear Put Spread (Debit) — preferred when IV is LOW",
+                "desc": (
+                    "Buy a near-the-money Put, sell a lower-strike Put to reduce cost. "
+                    "Profits from a swift downward move. More efficient than a naked long put "
+                    "in stable, low-volatility environments."
+                ),
+            },
+        ],
+        "SIDE": [
+            {
+                "title": "Iron Condor (Double Credit Spread) — ideal on index ETFs",
+                "desc": (
+                    "Combine a Bull Put Credit Spread below the current range AND a Bear Call Credit "
+                    "Spread above it simultaneously. Collect double premium. Profit as long as the "
+                    "asset stays inside your defined channel through expiration."
+                ),
+            },
+            {
+                "title": "OTM Credit Spreads (Single-side) — tighter setups",
+                "desc": (
+                    "Sell a spread far above or below the current consolidation band. "
+                    "Lower risk than the full condor; use when you have a mild directional lean "
+                    "or want to reduce margin usage while still harvesting time decay."
+                ),
+            },
+        ],
+    }
+
+    # ── Metric strip ──────────────────────────────────────────────────────
+    asset_name = ticker_info.get("shortName", live_ticker) if ticker_info else live_ticker
+    m1, m2, m3, m4, m5 = st.columns(5)
+    m1.metric("Asset", asset_name)
+    m2.metric("Last Close", f"${latest_price:,.2f}", f"{chg:+.2f} ({pct_chg:+.2f}%)")
+    m3.metric("50-Day SMA", f"${s50:,.2f}" if s50 else "N/A",
+              f"{((latest_price/s50)-1)*100:+.1f}% vs price" if s50 else "")
+    m4.metric("200-Day SMA", f"${s200:,.2f}" if s200 else "N/A",
+              f"{((latest_price/s200)-1)*100:+.1f}% vs price" if s200 else "")
+    m5.metric("SMA Spread", f"{((s50/s200)-1)*100:+.2f}%" if (s50 and s200) else "N/A",
+              "50 vs 200 SMA")
+
+    st.markdown("")
+
+    # ── Trend + strategy panel ─────────────────────────────────────────────
+    panel_col, chart_col = st.columns([1, 2])
+
+    with panel_col:
+        st.markdown(f"""
+        <div class="trend-card">
+            <div class="trend-badge {badge_class}">{trend_label}</div>
+            <p style="font-family:\'Space Mono\',monospace;font-size:0.65rem;color:#64748b;margin-bottom:1rem;letter-spacing:0.06em;text-transform:uppercase;">
+                Recommended Strategies
+            </p>
+        """, unsafe_allow_html=True)
+
+        for s in STRATEGIES[trend_key]:
+            st.markdown(f"""
+            <div class="strat-card">
+                <div class="strat-title">{s['title']}</div>
+                <div class="strat-desc">{s['desc']}</div>
+            </div>
+            """, unsafe_allow_html=True)
+
+        st.markdown("</div>", unsafe_allow_html=True)
+
+    # ── Price + SMA chart ──────────────────────────────────────────────────
+    with chart_col:
+        st.markdown('<p class="section-label">Price History with Moving Averages</p>', unsafe_allow_html=True)
+
+        fig_live = go.Figure()
+
+        # Candlestick (OHLC available from yfinance)
+        if "Open" in mkt_data.columns and "High" in mkt_data.columns and "Low" in mkt_data.columns:
+            fig_live.add_trace(go.Candlestick(
+                x=mkt_data.index,
+                open=mkt_data["Open"], high=mkt_data["High"],
+                low=mkt_data["Low"],  close=mkt_data["Close"],
+                name="Price",
+                increasing_line_color="#10b981", decreasing_line_color="#f43f5e",
+                increasing_fillcolor="rgba(16,185,129,0.4)",
+                decreasing_fillcolor="rgba(244,63,94,0.4)",
+                showlegend=True,
+            ))
+        else:
+            fig_live.add_trace(go.Scatter(
+                x=mkt_data.index, y=mkt_data["Close"],
+                name="Close", line=dict(color="#00d4ff", width=1.5),
+            ))
+
+        fig_live.add_trace(go.Scatter(
+            x=mkt_data.index, y=mkt_data["SMA50"],
+            name="50 SMA", line=dict(color="#fbbf24", width=1.8, dash="dash"),
+        ))
+        fig_live.add_trace(go.Scatter(
+            x=mkt_data.index, y=mkt_data["SMA200"],
+            name="200 SMA", line=dict(color="#7c3aed", width=1.8, dash="dot"),
+        ))
+
+        # Shade the trend background subtly
+        fig_live.add_hrect(
+            y0=0, y1=1, xref="paper", yref="paper",
+            fillcolor=trend_color, opacity=0.03, line_width=0,
+        )
+
+        fig_live.update_layout(
+            **PLOTLY_THEME,
+            height=400,
+            hovermode="x unified",
+            legend=dict(orientation="h", y=1.02, x=0, font=dict(size=10)),
+            xaxis_rangeslider_visible=False,
+            yaxis_title="Price ($)",
+        )
+        st.plotly_chart(fig_live, use_container_width=True)
+
+    # ── Volume bar chart ───────────────────────────────────────────────────
+    if "Volume" in mkt_data.columns and mkt_data["Volume"].sum() > 0:
+        st.markdown('<p class="section-label">Volume</p>', unsafe_allow_html=True)
+        vol_colors = [
+            "#10b981" if mkt_data["Close"].iloc[i] >= mkt_data["Close"].iloc[i-1] else "#f43f5e"
+            for i in range(len(mkt_data))
+        ]
+        fig_vol = go.Figure(go.Bar(
+            x=mkt_data.index,
+            y=mkt_data["Volume"],
+            marker_color=vol_colors,
+            name="Volume",
+            hovertemplate="<b>%{x|%d %b %Y}</b><br>Volume: %{y:,.0f}<extra></extra>",
+        ))
+        fig_vol.update_layout(**PLOTLY_THEME, height=140, showlegend=False,
+                              yaxis_title="Volume", margin=dict(l=40, r=20, t=10, b=40))
+        st.plotly_chart(fig_vol, use_container_width=True)
+
+    # ── Reference table: ETF & stock guide ────────────────────────────────
+    with st.expander("📖  Vehicle Selection Reference Guide", expanded=False):
+        st.markdown("""
+<style>
+.ref-table { width:100%; border-collapse:collapse; font-family:'Space Mono',monospace; font-size:0.72rem; }
+.ref-table th { color:#00d4ff; border-bottom:1px solid #1e3a5f; padding:6px 10px; text-align:left; text-transform:uppercase; letter-spacing:0.08em; }
+.ref-table td { padding:6px 10px; border-bottom:1px solid #1a2235; color:#e2e8f0; vertical-align:top; }
+.ref-table tr:hover td { background:rgba(0,212,255,0.04); }
+</style>
+<table class="ref-table">
+  <tr><th>Ticker</th><th>Category</th><th>Best For</th><th>Notes</th></tr>
+  <tr><td>SPY</td><td>Broad Market ETF</td><td>All trends</td><td>Tightest spreads, weekly + daily expirations</td></tr>
+  <tr><td>QQQ</td><td>Broad Market ETF</td><td>Tech-driven trends</td><td>Heavy FAANG/AI weighting, high liquidity</td></tr>
+  <tr><td>IWM</td><td>Broad Market ETF</td><td>Sideways / Condors</td><td>Small-caps; ideal for Iron Condors</td></tr>
+  <tr><td>TLT</td><td>Bond ETF</td><td>Rate-driven plays</td><td>Trade when Fed policy shifts dominate</td></tr>
+  <tr><td>XLF</td><td>Sector ETF</td><td>Financials exposure</td><td>Banks + brokerages; reacts to rate moves</td></tr>
+  <tr><td>XLE</td><td>Sector ETF</td><td>Energy / Oil plays</td><td>Follows crude oil; elevated IV after supply news</td></tr>
+  <tr><td>SMH</td><td>Sector ETF</td><td>Semiconductor cycle</td><td>High-beta; fat premiums around earnings clusters</td></tr>
+  <tr><td>AAPL / MSFT</td><td>Mega-Cap Stock</td><td>Low-IV debit spreads</td><td>Stable IV outside earnings windows</td></tr>
+  <tr><td>NVDA / AMD</td><td>Mega-Cap Stock</td><td>High-IV credit spreads</td><td>Wide swings; sell spreads far OTM near earnings</td></tr>
+  <tr><td>TSLA</td><td>Mega-Cap Stock</td><td>Aggressive directional</td><td>Very high IV; tight position sizing required</td></tr>
+</table>
+        """, unsafe_allow_html=True)

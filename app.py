@@ -147,6 +147,34 @@ section[data-testid="stSidebar"] * { color: var(--text) !important; }
 .strat-title { color: var(--accent); font-weight: 700; margin-bottom: 0.3rem; font-size: 0.72rem; letter-spacing: 0.08em; text-transform: uppercase; }
 .strat-desc  { color: var(--text); line-height: 1.5; }
 
+.primary-strat {
+    background: linear-gradient(135deg, rgba(0,212,255,0.08), rgba(124,58,237,0.08));
+    border: 1px solid var(--accent);
+    border-radius: 10px;
+    padding: 1rem 1.2rem;
+    margin-bottom: 0.8rem;
+}
+.primary-label {
+    font-family: var(--font-mono);
+    font-size: 0.6rem;
+    letter-spacing: 0.15em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin-bottom: 0.5rem;
+}
+.primary-name {
+    font-family: var(--font-mono);
+    font-size: 1rem;
+    font-weight: 700;
+    color: var(--text);
+    margin-bottom: 0.3rem;
+}
+.credit-badge { display:inline-block; padding:0.15rem 0.5rem; border-radius:4px; font-family:var(--font-mono); font-size:0.6rem; font-weight:700; letter-spacing:0.08em; background:rgba(16,185,129,0.15); color:#10b981; border:1px solid #10b981; margin-right:0.4rem; }
+.debit-badge  { display:inline-block; padding:0.15rem 0.5rem; border-radius:4px; font-family:var(--font-mono); font-size:0.6rem; font-weight:700; letter-spacing:0.08em; background:rgba(251,191,36,0.15); color:#fbbf24; border:1px solid #fbbf24; margin-right:0.4rem; }
+.iv-high  { color: #f43f5e; }
+.iv-mod   { color: #fbbf24; }
+.iv-low   { color: #10b981; }
+
 /* Section labels */
 .section-label {
     font-family: var(--font-mono);
@@ -721,6 +749,32 @@ with tab5:
             pass
         return raw, info
 
+    @st.cache_data(ttl=300, show_spinner=False)
+    def fetch_atm_iv(ticker: str, latest_px: float):
+        """Pull ATM implied volatility from the nearest options expiry (≥7 days out)."""
+        try:
+            tk = yf.Ticker(ticker)
+            exps = tk.options
+            if not exps:
+                return None
+            today = datetime.today().date()
+            valid = [e for e in exps
+                     if (datetime.strptime(e, "%Y-%m-%d").date() - today).days >= 7]
+            if not valid:
+                return None
+            chain = tk.option_chain(valid[0])
+            ivs = []
+            for side in (chain.calls, chain.puts):
+                if side.empty:
+                    continue
+                idx = (side["strike"] - latest_px).abs().idxmin()
+                v = side.loc[idx, "impliedVolatility"]
+                if pd.notna(v) and float(v) > 0:
+                    ivs.append(float(v) * 100)
+            return round(sum(ivs) / len(ivs), 2) if ivs else None
+        except Exception:
+            return None
+
     with st.spinner(f"Fetching live data for {live_ticker}..."):
         try:
             mkt_data, ticker_info = fetch_market_data(live_ticker, lookback_days)
@@ -749,6 +803,35 @@ with tab5:
     sma200_val   = mkt_data["SMA200"].dropna().iloc[-1] if not mkt_data["SMA200"].dropna().empty else None
     latest_price = float(latest)
 
+    # ── IV / HV computation ────────────────────────────────────────────────
+    _close  = mkt_data["Close"].squeeze()
+    _ret    = _close.pct_change().dropna()
+    _hv_ser = (_ret.rolling(30).std() * np.sqrt(252) * 100).dropna()
+
+    hv30     = float(_hv_ser.iloc[-1]) if not _hv_ser.empty else None
+    hv_rank  = None
+    hv_pct   = None
+    if len(_hv_ser) > 1:
+        _lo, _hi = _hv_ser.min(), _hv_ser.max()
+        hv_rank = float((_hv_ser.iloc[-1] - _lo) / (_hi - _lo) * 100) if _hi != _lo else 50.0
+        hv_pct  = float((_hv_ser < _hv_ser.iloc[-1]).mean() * 100)
+
+    with st.spinner("Fetching IV from options chain…"):
+        atm_iv = fetch_atm_iv(live_ticker, latest_price)
+
+    # IV environment: use hv_rank as the rank signal (free-data proxy for IV Rank)
+    if hv_rank is not None:
+        if hv_rank >= 50:
+            iv_env, iv_css = "HIGH",     "iv-high"
+        elif hv_rank >= 25:
+            iv_env, iv_css = "MODERATE", "iv-mod"
+        else:
+            iv_env, iv_css = "LOW",      "iv-low"
+    else:
+        iv_env, iv_css = "UNKNOWN", "neu"
+
+    iv_hv_ratio = round(atm_iv / hv30, 2) if (atm_iv and hv30 and hv30 > 0) else None
+
     # ── Trend detection ────────────────────────────────────────────────────
     if sma50_val is not None and sma200_val is not None:
         s50 = float(sma50_val)
@@ -775,87 +858,101 @@ with tab5:
         trend_color = "#fbbf24"
         s50 = s200 = None
 
+    # Combined trend + IV → primary strategy recommendation
+    PRIMARY_REC = {
+        ("BULL", "HIGH"):     ("Bull Put Spread",  "CREDIT", "Sell OTM Put / Buy lower Put. Collect inflated premium while trend provides a floor. IV will mean-revert, accelerating decay on the short leg."),
+        ("BULL", "MODERATE"): ("Bull Put Spread",  "CREDIT", "Sell OTM Put / Buy lower Put. Balanced credit harvest with uptrend as a directional buffer. Solid risk/reward in a rising market."),
+        ("BULL", "LOW"):      ("Bull Call Spread",  "DEBIT",  "Buy near-ATM Call / Sell higher Call. Debit is cheap when IV is compressed — ideal for capturing a continued upside move at low cost."),
+        ("BEAR", "HIGH"):     ("Bear Call Spread",  "CREDIT", "Sell OTM Call / Buy higher Call. Harvest panicked call premium while the downtrend limits upside risk on your short leg."),
+        ("BEAR", "MODERATE"): ("Bear Call Spread",  "CREDIT", "Sell OTM Call / Buy higher Call. Credit spread with downtrend tailwind — keep short strike well above key resistance."),
+        ("BEAR", "LOW"):      ("Bear Put Spread",   "DEBIT",  "Buy near-ATM Put / Sell lower Put. Debit is affordable in a suppressed-IV environment — ideal for a swift, clean down-move."),
+        ("SIDE", "HIGH"):     ("Iron Condor",       "CREDIT", "Sell OTM Put spread + OTM Call spread simultaneously. Elevated IV inflates both wings — collect maximum double premium while price stays inside the range."),
+        ("SIDE", "MODERATE"): ("Iron Condor",       "CREDIT", "Sell OTM Put spread + OTM Call spread. Double premium on a consolidating asset — keep strikes outside the recent swing highs/lows."),
+        ("SIDE", "LOW"):      ("Iron Condor",       "CREDIT", "Iron Condor viable but premiums are thin. Widen strikes to collect adequate credit, or wait for an IV expansion before entering."),
+        ("BULL", "UNKNOWN"):  ("Bull Put Spread",   "CREDIT", "Uptrend detected — a Bull Put Spread is the default credit spread for bullish conditions."),
+        ("BEAR", "UNKNOWN"):  ("Bear Call Spread",  "CREDIT", "Downtrend detected — a Bear Call Spread is the default credit spread for bearish conditions."),
+        ("SIDE", "UNKNOWN"):  ("Iron Condor",       "CREDIT", "Consolidation detected — Iron Condor is the default double credit spread for sideways markets."),
+    }
+    primary_name, primary_type, primary_desc = PRIMARY_REC.get(
+        (trend_key, iv_env), PRIMARY_REC[(trend_key, "UNKNOWN")]
+    )
+
+    # Secondary strategies listed for context
     STRATEGIES = {
         "BULL": [
-            {
-                "title": "Bull Put Spread (Credit) — preferred when IV is HIGH",
-                "desc": (
-                    "Sell an OTM Put below current price, buy a further OTM Put as a hedge. "
-                    "Collect premium upfront. Profit fully if the asset stays above your short strike "
-                    "through expiration. Best executed during IV spikes on a short-term pullback."
-                ),
-            },
-            {
-                "title": "Bull Call Spread (Debit) — preferred when IV is LOW",
-                "desc": (
-                    "Buy a near-the-money Call, sell a higher-strike Call to cap cost. "
-                    "Profits from a continued upward move. Costs less than a naked long call "
-                    "because the short call offsets premium paid."
-                ),
-            },
+            {"title": "Bull Call Spread (Debit) — when IV is LOW",
+             "desc": "Buy a near-ATM Call, sell a higher-strike Call to cap cost. Profits from continued upward move at reduced premium outlay."},
+            {"title": "Bull Put Spread (Credit) — when IV is HIGH",
+             "desc": "Sell an OTM Put below current price, buy a further OTM Put as a hedge. Collect premium upfront during IV spikes on pullbacks."},
         ],
         "BEAR": [
-            {
-                "title": "Bear Call Spread (Credit) — preferred when IV is HIGH",
-                "desc": (
-                    "Sell an OTM Call above current price, buy a further OTM Call as a cap. "
-                    "Collect credit immediately. Profit fully if the asset stays below your short "
-                    "strike. Best during panic-driven IV spikes when call premiums inflate."
-                ),
-            },
-            {
-                "title": "Bear Put Spread (Debit) — preferred when IV is LOW",
-                "desc": (
-                    "Buy a near-the-money Put, sell a lower-strike Put to reduce cost. "
-                    "Profits from a swift downward move. More efficient than a naked long put "
-                    "in stable, low-volatility environments."
-                ),
-            },
+            {"title": "Bear Call Spread (Credit) — when IV is HIGH",
+             "desc": "Sell an OTM Call above current price, buy a further OTM Call as a cap. Best during panic-driven IV spikes."},
+            {"title": "Bear Put Spread (Debit) — when IV is LOW",
+             "desc": "Buy a near-ATM Put, sell a lower-strike Put to reduce cost. More efficient than a naked long put in stable environments."},
         ],
         "SIDE": [
-            {
-                "title": "Iron Condor (Double Credit Spread) — ideal on index ETFs",
-                "desc": (
-                    "Combine a Bull Put Credit Spread below the current range AND a Bear Call Credit "
-                    "Spread above it simultaneously. Collect double premium. Profit as long as the "
-                    "asset stays inside your defined channel through expiration."
-                ),
-            },
-            {
-                "title": "OTM Credit Spreads (Single-side) — tighter setups",
-                "desc": (
-                    "Sell a spread far above or below the current consolidation band. "
-                    "Lower risk than the full condor; use when you have a mild directional lean "
-                    "or want to reduce margin usage while still harvesting time decay."
-                ),
-            },
+            {"title": "Iron Condor (Double Credit) — ideal on index ETFs",
+             "desc": "Bull Put spread below + Bear Call spread above simultaneously. Profit fully as long as price stays inside the channel."},
+            {"title": "Single-side OTM Credit Spread — tighter margin",
+             "desc": "Sell one spread far above or below the range. Lower margin requirement; use when you have a mild directional lean."},
         ],
     }
 
     # ── Metric strip ──────────────────────────────────────────────────────
     asset_name = ticker_info.get("shortName", live_ticker) if ticker_info else live_ticker
-    m1, m2, m3, m4, m5 = st.columns(5)
+    m1, m2, m3, m4 = st.columns(4)
     m1.metric("Asset", asset_name)
     m2.metric("Last Close", f"${latest_price:,.2f}", f"{chg:+.2f} ({pct_chg:+.2f}%)")
     m3.metric("50-Day SMA", f"${s50:,.2f}" if s50 else "N/A",
               f"{((latest_price/s50)-1)*100:+.1f}% vs price" if s50 else "")
     m4.metric("200-Day SMA", f"${s200:,.2f}" if s200 else "N/A",
               f"{((latest_price/s200)-1)*100:+.1f}% vs price" if s200 else "")
-    m5.metric("SMA Spread", f"{((s50/s200)-1)*100:+.2f}%" if (s50 and s200) else "N/A",
-              "50 vs 200 SMA")
+
+    st.markdown("")
+
+    iv1, iv2, iv3, iv4 = st.columns(4)
+    iv1.metric(
+        "ATM Implied Vol",
+        f"{atm_iv:.1f}%" if atm_iv else "N/A",
+        "from options chain" if atm_iv else "options chain unavailable",
+    )
+    iv2.metric(
+        "HV30 (Realized)",
+        f"{hv30:.1f}%" if hv30 else "N/A",
+        f"IV/HV = {iv_hv_ratio:.2f}" if iv_hv_ratio else "",
+    )
+    iv3.metric(
+        "IV Rank (HV proxy)",
+        f"{hv_rank:.0f} / 100" if hv_rank is not None else "N/A",
+        iv_env,
+    )
+    iv4.metric(
+        "IV Percentile",
+        f"{hv_pct:.0f}th pct" if hv_pct is not None else "N/A",
+        f"over {len(_hv_ser)} sessions",
+    )
 
     st.markdown("")
 
     # ── Trend + strategy panel ─────────────────────────────────────────────
-    panel_col, chart_col = st.columns([1, 2])
+    panel_col, gauge_col, chart_col = st.columns([2, 1, 3])
 
     with panel_col:
+        badge_type = "credit-badge" if primary_type == "CREDIT" else "debit-badge"
         st.markdown(f"""
         <div class="trend-card">
-            <div class="trend-badge {badge_class}">{trend_label}</div>
-            <p style="font-family:\'Space Mono\',monospace;font-size:0.65rem;color:#64748b;margin-bottom:1rem;letter-spacing:0.06em;text-transform:uppercase;">
-                Recommended Strategies
-            </p>
+            <div style="display:flex;gap:0.5rem;margin-bottom:0.8rem;flex-wrap:wrap;">
+                <div class="trend-badge {badge_class}">{trend_label}</div>
+                <div class="trend-badge badge-{'bear' if iv_env=='HIGH' else ('side' if iv_env=='MODERATE' else 'bull')}">IV {iv_env}</div>
+            </div>
+            <div class="primary-strat">
+                <div class="primary-label">Primary Recommendation</div>
+                <div class="primary-name">{primary_name}</div>
+                <span class="{badge_type}">{primary_type}</span>
+                <p style="font-family:\'Space Mono\',monospace;font-size:0.72rem;color:#94a3b8;margin-top:0.5rem;line-height:1.5;">{primary_desc}</p>
+            </div>
+            <p style="font-family:\'Space Mono\',monospace;font-size:0.6rem;color:#64748b;margin-bottom:0.5rem;letter-spacing:0.1em;text-transform:uppercase;">Alternative Structures</p>
         """, unsafe_allow_html=True)
 
         for s in STRATEGIES[trend_key]:
@@ -867,6 +964,49 @@ with tab5:
             """, unsafe_allow_html=True)
 
         st.markdown("</div>", unsafe_allow_html=True)
+
+    # ── IV Rank gauge ──────────────────────────────────────────────────────
+    with gauge_col:
+        st.markdown('<p class="section-label">IV Rank</p>', unsafe_allow_html=True)
+        gauge_val = hv_rank if hv_rank is not None else 0
+        gauge_color = "#f43f5e" if gauge_val >= 50 else ("#fbbf24" if gauge_val >= 25 else "#10b981")
+        fig_gauge = go.Figure(go.Indicator(
+            mode="gauge+number",
+            value=gauge_val,
+            number={"suffix": "", "font": {"family": "Space Mono", "color": gauge_color, "size": 28}},
+            gauge={
+                "axis": {"range": [0, 100], "tickwidth": 1, "tickcolor": "#1e3a5f",
+                         "tickfont": {"family": "Space Mono", "size": 9, "color": "#64748b"}},
+                "bar": {"color": gauge_color, "thickness": 0.25},
+                "bgcolor": "#111827",
+                "borderwidth": 0,
+                "steps": [
+                    {"range": [0,  25], "color": "rgba(16,185,129,0.12)"},
+                    {"range": [25, 50], "color": "rgba(251,191,36,0.12)"},
+                    {"range": [50, 100], "color": "rgba(244,63,94,0.12)"},
+                ],
+                "threshold": {"line": {"color": gauge_color, "width": 2},
+                              "thickness": 0.75, "value": gauge_val},
+            },
+        ))
+        fig_gauge.update_layout(
+            **{k: v for k, v in PLOTLY_THEME.items() if k not in ("xaxis", "yaxis")},
+            height=220,
+            margin=dict(l=20, r=20, t=10, b=10),
+        )
+        st.plotly_chart(fig_gauge, use_container_width=True)
+
+        iv_note = "SELL PREMIUM" if iv_env == "HIGH" else ("NEUTRAL" if iv_env == "MODERATE" else "BUY PREMIUM")
+        st.markdown(f"""
+        <p style="font-family:'Space Mono',monospace;font-size:0.65rem;text-align:center;
+                  color:{gauge_color};letter-spacing:0.1em;text-transform:uppercase;margin-top:-0.5rem;">
+            {iv_note}
+        </p>
+        <p style="font-family:'Space Mono',monospace;font-size:0.58rem;text-align:center;
+                  color:#64748b;margin-top:0.2rem;">
+            {'ATM IV ' + str(atm_iv) + '% · ' if atm_iv else ''}HV30 {round(hv30,1) if hv30 else 'N/A'}%
+        </p>
+        """, unsafe_allow_html=True)
 
     # ── Price + SMA chart ──────────────────────────────────────────────────
     with chart_col:
